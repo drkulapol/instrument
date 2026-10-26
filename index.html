@@ -1,0 +1,461 @@
+<title>SQL ตรวจ ICD9 ↔ Instrument IPD</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Anuphan:wght@600;700&family=IBM+Plex+Sans+Thai:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: one reading column — short intro, steps, then the full SQL with a copy button */
+:root{--bg:#f3f5f8;--paper:#fff;--ink:#16202b;--muted:#5a6676;--line:#dbe1e8;--code:#f7f9fb;--accent:#0d6178;--accent-ink:#fff;--ok:#2c7a4b;
+--f-display:'Anuphan','IBM Plex Sans Thai',system-ui,sans-serif;--f-body:'IBM Plex Sans Thai',system-ui,'Segoe UI',Tahoma,sans-serif;--f-mono:'IBM Plex Mono',ui-monospace,Menlo,Consolas,monospace}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){--bg:#0e1319;--paper:#151c24;--ink:#e5eaf0;--muted:#98a4b2;--line:#29333f;--code:#10161d;--accent:#5db4cf;--accent-ink:#0b1a20;--ok:#5cc28a;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#0e1319;--paper:#151c24;--ink:#e5eaf0;--muted:#98a4b2;--line:#29333f;--code:#10161d;--accent:#5db4cf;--accent-ink:#0b1a20;--ok:#5cc28a;color-scheme:dark}
+body{background:var(--bg);color:var(--ink);font-family:var(--f-body);font-size:15px;line-height:1.65}
+.wrap{max-width:980px;margin:0 auto;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
+a{color:var(--accent)}
+header{background:var(--paper);border-bottom:1px solid var(--line)} header .wrap{padding-block:26px 22px}
+h1{font-family:var(--f-display);font-size:clamp(22px,3.4vw,30px);line-height:1.3;margin:0;text-wrap:balance}
+.sub{color:var(--muted);margin:6px 0 0;max-width:68ch}
+main .wrap{padding-block:22px 40px;display:grid;gap:18px}
+.panel{background:var(--paper);border:1px solid var(--line);border-radius:8px;padding:16px 18px}
+h2{font-family:var(--f-display);font-size:17px;margin:0 0 8px}
+ol,ul{margin:0;padding-left:22px;display:grid;gap:4px}
+code.i{font-family:var(--f-mono);font-size:13px;background:var(--code);border:1px solid var(--line);border-radius:4px;padding:0 5px}
+.bar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between;padding:10px 14px;border-bottom:1px solid var(--line)}
+.bar span{font-size:13px;color:var(--muted)}
+.codebox{background:var(--paper);border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.btn{border:1px solid var(--accent);background:var(--accent);color:var(--accent-ink);border-radius:6px;padding:7px 16px;cursor:pointer;font:inherit;font-weight:500}
+.btn:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.btn.done{background:var(--ok);border-color:var(--ok)}
+pre{margin:0;padding:14px 16px;overflow:auto;max-height:70vh;background:var(--code);font-family:var(--f-mono);font-size:12.5px;line-height:1.55;tab-size:2}
+.cols{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:4px 24px;font-size:14px}
+.cols div{min-width:0}
+footer{border-top:1px solid var(--line);background:var(--paper);font-size:13px;color:var(--muted)} footer .wrap{padding-block:18px;line-height:1.7}
+@media (max-width:600px){.cols{grid-template-columns:1fr}}
+</style>
+
+<header><div class="wrap">
+<h1>SQL ตรวจความครบถ้วน ICD9 ↔ Instrument (ADP) ผู้ป่วยใน</h1>
+<p class="sub">สำหรับ HOSxP XE (PostgreSQL) · ตรวจว่า AN ผู้ป่วยในที่มีหัตถการหรืออวัยวะเทียม ลงรหัส ICD9, ADP และ PDx สอดคล้องกันครบตาม 77 กฎ ผลลัพธ์ออกมาเป็น 1 แถวต่อ 1 AN ที่ผิด 1 กฎ พร้อมหมายเหตุและวิธีแก้ไข</p>
+</div></header>
+
+<main><div class="wrap">
+<section class="panel">
+<h2>วิธีใช้</h2>
+<ol>
+<li>กดปุ่ม <b>คัดลอกโค้ด</b></li>
+<li>วางใน SQLQueryForm ของ HOSxP</li>
+<li>แก้ช่วงวันจำหน่ายที่บรรทัด <code class="i">DATE '2026-10-01'</code> และ <code class="i">DATE '2026-10-31'</code> (รูปแบบ ปี ค.ศ.-เดือน-วัน)</li>
+<li>กด Execute แล้ว export ผลเป็น Excel ส่งให้ทีมเวชระเบียน/coder แก้ไข</li>
+</ol>
+</section>
+
+<section class="panel">
+<h2>กลุ่มกฎที่ตรวจ</h2>
+<ul>
+<li><b>A</b> มี ICD9 หัตถการ แต่ไม่พบ ADP อุปกรณ์ที่ต้องใช้ (เช่น 1371 ต้องมี IOL 2006/2007)</li>
+<li><b>B</b> มี ADP อุปกรณ์ แต่ไม่พบ ICD9 หัตถการที่รองรับ (เช่น mesh 5608 ต้องเป็นรหัสไส้เลื่อนแบบ with graft)</li>
+<li><b>C</b> ADP ที่ต้องมาเป็นคู่ (เช่น plate 7301 คู่กับ screw 7214B)</li>
+<li><b>D</b> ความสอดคล้องกับ PDx และกรณีถอดอุปกรณ์</li>
+</ul>
+</section>
+
+<section class="codebox">
+<div class="bar"><span>icd9_instrument_ipd.sql · PostgreSQL</span><button class="btn" id="copy">คัดลอกโค้ด</button></div>
+<pre id="sql">/* =====================================================================
+   ตรวจสอบความครบถ้วน ICD9 ↔ Instrument (ADP) ผู้ป่วยใน (IPD)
+   HOSxP XE (PostgreSQL) — rule base = rules_icd9_instrument.csv (76 กฎ)
+   ผลลัพธ์ = 1 แถว = 1 AN ที่ผิดเงื่อนไข 1 กฎ พร้อมหมายเหตุ + วิธีแก้ไข
+   ---------------------------------------------------------------------
+   แหล่งข้อมูล
+     ICD9  = iptoprt.icd9            (หัตถการ IPD ที่ส่งออกเคลม)
+     ADP   = opitemrece (an) + nondrugitems.nhso_adp_code  (qty สุทธิ &gt; 0)
+     PDx   = iptdiag.diagtype = '1'
+   แก้ช่วงวันที่ได้ที่ CTE param
+   ฉบับเร็ว - เทียบ regex ครั้งเดียวต่อรหัส แล้วสรุปผลต่อ AN
+   ใช้เฉพาะไวยากรณ์พื้นฐาน เพื่อให้ SQLQueryForm ของ HOSxP รับได้
+   หมายเหตุ - ไฟล์นี้ไม่มีเครื่องหมาย double quote เพราะ HOSxP แปลงเป็น single quote (อิงวันจำหน่าย dchdate)
+   ===================================================================== */
+WITH
+param AS (
+  SELECT DATE '2026-10-01' AS d1,
+         DATE '2026-10-31' AS d2
+),
+
+/* ---------- ประชากร = IPD ที่จำหน่ายในช่วงวันที่ ---------- */
+ipd AS (
+  SELECT i.an, i.hn, i.regdate, i.dchdate, i.pttype
+  FROM ipt i
+  CROSS JOIN param p
+  WHERE i.dchdate BETWEEN p.d1 AND p.d2
+),
+
+/* ---------- ICD9 ที่ลงใน AN ---------- */
+icd AS (
+  SELECT DISTINCT o.an, replace(upper(trim(o.icd9)), '.', '') AS code
+  FROM iptoprt o
+  JOIN ipd v ON v.an = o.an
+  WHERE coalesce(trim(o.icd9), '') &lt;&gt; ''
+),
+
+/* ---------- ADP ที่คีย์ใน AN (กรองช่วงวันที่นอน เพื่อใช้ index rxdate) ---------- */
+adp AS (
+  SELECT r.an, upper(trim(n.nhso_adp_code)) AS code, sum(r.qty) AS qty
+  FROM opitemrece r
+  JOIN ipd v          ON v.an = r.an
+  JOIN nondrugitems n ON n.icode = r.icode
+  WHERE r.rxdate BETWEEN v.regdate AND v.dchdate + 1
+    AND coalesce(trim(n.nhso_adp_code), '') &lt;&gt; ''
+  GROUP BY r.an, upper(trim(n.nhso_adp_code))
+  HAVING sum(r.qty) &gt; 0
+),
+
+/* ---------- PDx ---------- */
+pdx AS (
+  SELECT DISTINCT ON (d.an) d.an, replace(upper(trim(d.icd10)), '.', '') AS code
+  FROM iptdiag d
+  JOIN ipd v ON v.an = d.an
+  WHERE d.diagtype = '1'
+  ORDER BY d.an
+),
+
+/* ---------- RULE BASE ---------- */
+rules AS (
+  SELECT * FROM (VALUES
+  /* ---------------- A = มี ICD9 → ต้องมี ADP ---------------- */
+  ('A01','ERROR','^1371$',NULL,NULL,NULL,'^(2006|2007)$',NULL,
+   'มี ICD9 1371 (ใส่เลนส์แก้วตาเทียม) แต่ไม่พบ ADP 2006 หรือ 2007 (IOL)',
+   'คีย์ ADP 2006 หรือ 2007 ตามชนิด IOL ในใบเบิก/สติกเกอร์'),
+  ('A02','ERROR','^(530[3-5]|531[4-7]|5321|5331|534[12]|536[0-9]?|171[1-9]|172[0-4])$',NULL,NULL,NULL,'^5608$',NULL,
+   'มี ICD9 ซ่อมไส้เลื่อนแบบ with graft/prosthesis แต่ไม่พบ ADP 5608 (mesh)',
+   'ถ้าใช้ mesh คีย์ ADP 5608; ถ้าไม่ใช้ mesh เปลี่ยน ICD9 เป็นรหัส without graft (เช่น 5300-5302, 5310-5313, 5329, 5339, 5349, 5359)'),
+  ('A03','ERROR','^5187$',NULL,NULL,NULL,'^(5302|5303)$',NULL,
+   'มี ICD9 5187 (ใส่ stent ท่อน้ำดี) แต่ไม่พบ ADP 5302/5303',
+   'คีย์ ADP 5302 หรือ 5303 ตามชนิด stent ที่ใช้'),
+  ('A04','ERROR','^(311|312[0-9]?)$',NULL,NULL,NULL,'^3003$',NULL,
+   'มี ICD9 เจาะคอ (311/312x) แต่ไม่พบ ADP 3003 (tracheostomy tube)',
+   'คีย์ ADP 3003 ตามจำนวนท่อที่ใช้'),
+  ('A05','ERROR','^9723$',NULL,NULL,NULL,'^3003$',NULL,
+   'มี ICD9 9723 (เปลี่ยนท่อเจาะคอ) แต่ไม่พบ ADP 3003',
+   'คีย์ ADP 3003 สำหรับท่อที่เปลี่ยน'),
+  ('A06','WARNING','^8154$',NULL,NULL,NULL,'^7005A$',NULL,
+   'มี ICD9 8154 (TKR) แต่ไม่พบ ADP 7005A (ข้อเข่าเทียม)',
+   'คีย์ ADP 7005A ตามใบเบิกข้อเข่าเทียม'),
+  ('A07','ERROR','^8154$',NULL,NULL,NULL,'^7402$',NULL,
+   'มี ICD9 8154 (TKR) แต่ไม่พบ ADP 7402 (bone cement)',
+   'คีย์ ADP 7402 ตามจำนวนซีเมนต์ที่ใช้'),
+  ('A08','WARNING','^8455$',NULL,NULL,NULL,'^7402$',NULL,
+   'มี ICD9 8455 (bone void filler) แต่ไม่พบ ADP 7402',
+   'คีย์ ADP 7402 ถ้าใช้ซีเมนต์กระดูก'),
+  ('A09','ERROR','^(8151|8153)$',NULL,NULL,NULL,'^7011$',NULL,
+   'มี ICD9 8151/8153 (total hip / revision) แต่ไม่พบ ADP 7011 (THA)',
+   'คีย์ ADP 7011 ตามใบเบิกข้อสะโพกเทียม'),
+  ('A10','ERROR','^8152$',NULL,NULL,NULL,'^7010$',NULL,
+   'มี ICD9 8152 (partial hip) แต่ไม่พบ ADP 7010 (bipolar)',
+   'คีย์ ADP 7010 ตามใบเบิกข้อสะโพกเทียมครึ่งซีก'),
+  ('A11','ERROR','^7915$',NULL,NULL,NULL,'^(7206|7202|7209)$',NULL,
+   'มี ICD9 7915 (CRIF femur) แต่ไม่พบ ADP 7206/7202/7209',
+   'คีย์ ADP ของ nail/plate ที่ใช้จริง (PFN 7206, IM nail 7202, distal femur 7209)'),
+  ('A12','ERROR','^781[0-9]?$',NULL,NULL,NULL,'^7216$',NULL,
+   'มี ICD9 781x (ใส่ external fixator) แต่ไม่พบ ADP 7216',
+   'คีย์ ADP 7216 (external fixator)'),
+  ('A13','ERROR','^(810[4-8]|816[2-4])$',NULL,NULL,NULL,'^7208A$',NULL,
+   'มี ICD9 spinal fusion แต่ไม่พบ ADP 7208A (pedicle screw)',
+   'คีย์ ADP 7208A ตามจำนวน pedicle screw'),
+  ('A14','WARNING','^(810[4-8]|816[2-4])$',NULL,NULL,NULL,'^7208B$',NULL,
+   'มี ICD9 spinal fusion แต่ไม่พบ ADP 7208B (rod)',
+   'คีย์ ADP 7208B ตามจำนวน rod'),
+  ('A15','WARNING','^8451$',NULL,NULL,NULL,'^(7208A|7208B|7102)$',NULL,
+   'มี ICD9 8451 (interbody fusion device) แต่ไม่พบ ADP 7208A/7208B/7102',
+   'คีย์ ADP อุปกรณ์กระดูกสันหลังที่ใช้จริง (screw 7208A / rod 7208B / cage 7102)'),
+  ('A16','WARNING','^(8102|8103)$',NULL,NULL,NULL,'^7102$',NULL,
+   'มี ICD9 8102/8103 (cervical fusion) แต่ไม่พบ ADP 7102 (cage)',
+   'คีย์ ADP 7102 ถ้าใช้ cage/bone graft substitute'),
+  ('A17','ERROR','^8363$',NULL,NULL,NULL,'^(7307|7601)$',NULL,
+   'มี ICD9 8363 (rotator cuff repair) แต่ไม่พบ ADP 7307/7601',
+   'คีย์ ADP 7307 (suture anchor) และ/หรือ 7601 (อุปกรณ์ส่องกล้องไหล่)'),
+  ('A18','ERROR','^(8145|8146)$',NULL,NULL,NULL,'^(7305|7308|7306|7302)$',NULL,
+   'มี ICD9 8145/8146 (ACL/ligament repair) แต่ไม่พบ ADP 7305/7308/7306/7302',
+   'คีย์ ADP อุปกรณ์ส่องกล้องเข่า/screw ที่ใช้จริง'),
+  ('A19','ERROR','^32[2-4][0-9]$',NULL,NULL,NULL,'^5503$',NULL,
+   'มี ICD9 3220-3249 (ผ่าตัดปอด) แต่ไม่พบ ADP 5503 (stapler)',
+   'คีย์ ADP 5503 ตามจำนวน stapler/cartridge'),
+  ('A20','WARNING','^(456|457)[0-9]?$',NULL,NULL,NULL,'^(5501|5502|5503)$',NULL,
+   'มี ICD9 456x/457x (ตัดลำไส้) แต่ไม่พบ ADP stapler 5501/5502/5503',
+   'ถ้าใช้ stapler คีย์ ADP ที่ใช้จริง; ถ้าเย็บมือไม่ต้องแก้'),
+  ('A21','WARNING','^486[0-9]?$',NULL,NULL,NULL,'^(5501|5502|5503)$',NULL,
+   'มี ICD9 486x (ตัดลำไส้ตรง) แต่ไม่พบ ADP stapler 5501/5502/5503',
+   'ถ้าใช้ stapler คีย์ ADP ที่ใช้จริง; ถ้าเย็บมือไม่ต้องแก้'),
+  ('A22','ERROR','^793[0-9]?$',NULL,NULL,NULL,'^(7301|7214A|7214B|7302|7210|7209|7202|7206|7313|7315|7216)$',NULL,
+   'มี ICD9 793x (ORIF) แต่ไม่พบ ADP plate/screw/nail/K-wire',
+   'คีย์ ADP อุปกรณ์ยึดตรึงที่ใช้จริงอย่างน้อย 1 รายการ (7301, 7214A/B, 7302, 7210, 7209, 7202, 7206, 7313, 7315, 7216)'),
+  ('A23','ERROR','^791[0-9]?$',NULL,NULL,NULL,'^(7301|7214A|7214B|7302|7210|7209|7202|7206|7313|7315|7216)$',NULL,
+   'มี ICD9 791x (CRIF) แต่ไม่พบ ADP plate/screw/nail/K-wire',
+   'คีย์ ADP อุปกรณ์ยึดตรึงที่ใช้จริงอย่างน้อย 1 รายการ; ถ้าเป็น closed reduction ไม่ใส่อุปกรณ์ เปลี่ยน ICD9 เป็น 790x'),
+  ('A24','WARNING','^767[0-9]?$',NULL,NULL,NULL,'^(7212|7304)$',NULL,
+   'มี ICD9 767x (reduction facial fx) แต่ไม่พบ ADP 7212/7304',
+   'คีย์ ADP mini plate 7212 / mini screw 7304 ถ้าใช้'),
+
+  /* ---------------- B = มี ADP → ต้องมี ICD9 ---------------- */
+  ('B01','ERROR',NULL,'^2006$','^137[012]$',NULL,NULL,NULL,
+   'มี ADP 2006 (IOL) แต่ไม่พบ ICD9 1370/1371/1372',
+   'เพิ่ม ICD9 1371 (หรือ 1370/1372 ตามที่ทำจริง)'),
+  ('B02','WARNING',NULL,'^8701$','^9324$',NULL,NULL,NULL,
+   'มี ADP 8701 (walker) แต่ไม่พบ ICD9 9324',
+   'เพิ่ม ICD9 9324 (training in use of orthotic device)'),
+  ('B03','ERROR',NULL,'^7402$','^8455$','^815[0-9]?$',NULL,NULL,
+   'มี ADP 7402 (bone cement) แต่ไม่พบ ICD9 8455 และ 815x ครบคู่',
+   'เพิ่ม ICD9 8455 และ/หรือ 815x ที่ขาด ตาม operative note'),
+  ('B04','ERROR',NULL,'^7208A$','^(810[0-9]?|816[0-9]?|8451|0309)$',NULL,NULL,NULL,
+   'มี ADP 7208A (pedicle screw) แต่ไม่พบ ICD9 810x/816x/8451/0309',
+   'เพิ่ม ICD9 spinal fusion / 8451 / 0309 ตามที่ทำจริง'),
+  ('B05','ERROR',NULL,'^7302$','^((7[6-9]|8[0-4])[0-9]{1,2}|0[12][0-9]{1,2})$',NULL,NULL,NULL,
+   'มี ADP 7302 (screw) แต่ไม่พบ ICD9 ผ่าตัดกระดูก 76xx-84xx หรือ craniotomy',
+   'เพิ่ม ICD9 ผ่าตัดกระดูก/craniotomy ที่ทำจริง'),
+  ('B06','ERROR',NULL,'^7301$','^(791|793|785)[0-9]?$',NULL,NULL,NULL,
+   'มี ADP 7301 (plate) แต่ไม่พบ ICD9 791x/793x/785x',
+   'เพิ่ม ICD9 791x/793x/785x ตาม operative note'),
+  ('B07','ERROR',NULL,'^7214B$','^(791|793|785)[0-9]?$',NULL,NULL,NULL,
+   'มี ADP 7214B (screw) แต่ไม่พบ ICD9 791x/793x/785x',
+   'เพิ่ม ICD9 791x/793x/785x ตาม operative note'),
+  ('B08','ERROR',NULL,'^7208B$','^(810[0-9]?|816[0-9]?|8451|0309)$',NULL,NULL,NULL,
+   'มี ADP 7208B (rod) แต่ไม่พบ ICD9 810x/816x/8451/0309',
+   'เพิ่ม ICD9 spinal fusion / 8451 / 0309 ตามที่ทำจริง'),
+  ('B09','ERROR',NULL,'^7313$','^(791[0-9]?|793[0-9]?|8245)$',NULL,NULL,NULL,
+   'มี ADP 7313 (K-wire/pin) แต่ไม่พบ ICD9 791x/793x/8245',
+   'เพิ่ม ICD9 791x/793x หรือ 8245 (มือ) ตามที่ทำจริง'),
+  ('B10','ERROR',NULL,'^7005A$','^8154$',NULL,NULL,NULL,
+   'มี ADP 7005A (ข้อเข่าเทียม) แต่ไม่พบ ICD9 8154',
+   'เพิ่ม ICD9 8154 (TKR)'),
+  ('B11','ERROR',NULL,'^7206$','^(7915|7935)$',NULL,NULL,NULL,
+   'มี ADP 7206 (PFN) แต่ไม่พบ ICD9 7915/7935',
+   'เพิ่ม ICD9 7915 (CRIF femur) หรือ 7935 (ORIF femur)'),
+  ('B12','WARNING',NULL,'^8705$','^9324$',NULL,NULL,NULL,
+   'มี ADP 8705 (crutches) แต่ไม่พบ ICD9 9324',
+   'เพิ่ม ICD9 9324'),
+  ('B13','ERROR',NULL,'^5608$','^(530[3-5]|531[4-7]|5321|5331|5341|536[0-9]?|171[1-9]|172[0-4])$',NULL,NULL,NULL,
+   'มี ADP 5608 (mesh) แต่ ICD9 ไม่ใช่รหัสซ่อมไส้เลื่อนแบบ with graft/prosthesis',
+   'เปลี่ยน ICD9 เป็นรหัส with graft (5303-5305, 5314-5317, 5321, 5331, 5341, 536x, 1711-1724)'),
+  ('B14','ERROR',NULL,'^7210$','^(791|793|785)[0-9]?$',NULL,NULL,NULL,
+   'มี ADP 7210 (plate) แต่ไม่พบ ICD9 791x/793x/785x',
+   'เพิ่ม ICD9 791x/793x/785x ตาม operative note'),
+  ('B15','WARNING',NULL,'^7102$','^(8102|8103|8452|8051|7737|7857)$',NULL,NULL,NULL,
+   'มี ADP 7102 (cage/bone graft substitute) แต่ไม่พบ ICD9 8102/8103/8452/8051/7737/7857',
+   'เพิ่ม ICD9 ที่สอดคล้องกับการใช้ cage/graft'),
+  ('B16','ERROR',NULL,'^5503$','^(32[0-9]{1,2}|4863|485[0-9]?)$',NULL,NULL,NULL,
+   'มี ADP 5503 (stapler) แต่ไม่พบ ICD9 ผ่าตัดปอด 32xx หรือ 4863/485x',
+   'เพิ่ม ICD9 ผ่าตัดปอด/ลำไส้ตรงที่ทำจริง'),
+  ('B17','ERROR',NULL,'^3003$','^(311|312[0-9]?|3174|9723)$',NULL,NULL,NULL,
+   'มี ADP 3003 (tracheostomy tube) แต่ไม่พบ ICD9 311/312x/3174/9723',
+   'เพิ่ม ICD9 เจาะคอ (311/312x) หรือเปลี่ยนท่อ (9723/3174)'),
+  ('B18','ERROR',NULL,'^7307$','^(8363|8021|8364)$',NULL,NULL,NULL,
+   'มี ADP 7307 (suture anchor) แต่ไม่พบ ICD9 8363/8021/8364',
+   'เพิ่ม ICD9 8363/8021/8364 ตามที่ทำจริง'),
+  ('B19','ERROR',NULL,'^5302$','^5187$',NULL,NULL,NULL,
+   'มี ADP 5302 (biliary stent) แต่ไม่พบ ICD9 5187',
+   'เพิ่ม ICD9 5187 (endoscopic insertion of stent bile duct)'),
+  ('B20','ERROR',NULL,'^7212$','^(767[0-9]?|247|0[12][0-9]{1,2})$',NULL,NULL,NULL,
+   'มี ADP 7212 (mini plate) แต่ไม่พบ ICD9 767x/247/01xx/02xx',
+   'เพิ่ม ICD9 reduction facial fx หรือ craniotomy ที่ทำจริง'),
+  ('B21','ERROR',NULL,'^7304$','^(767[0-9]?|247|0[12][0-9]{1,2})$',NULL,NULL,NULL,
+   'มี ADP 7304 (mini screw) แต่ไม่พบ ICD9 767x/247/01xx/02xx',
+   'เพิ่ม ICD9 reduction facial fx หรือ craniotomy ที่ทำจริง'),
+  ('B22','ERROR',NULL,'^7010$','^8152$',NULL,NULL,NULL,
+   'มี ADP 7010 (bipolar) แต่ไม่พบ ICD9 8152',
+   'เพิ่ม ICD9 8152 (partial hip replacement)'),
+  ('B23','ERROR',NULL,'^7202$','^(791|793|785)[0-9]?$',NULL,NULL,NULL,
+   'มี ADP 7202 (IM nail) แต่ไม่พบ ICD9 791x/793x/785x',
+   'เพิ่ม ICD9 791x/793x/785x ตาม operative note'),
+  ('B24','ERROR',NULL,'^5502$','^(456|457|459)[0-9]?$',NULL,NULL,NULL,
+   'มี ADP 5502 (linear stapler) แต่ไม่พบ ICD9 456x/457x/459x',
+   'เพิ่ม ICD9 ตัดต่อลำไส้ที่ทำจริง'),
+  ('B25','ERROR',NULL,'^7601$','^8021$','^8363$',NULL,NULL,
+   'มี ADP 7601 (ส่องกล้องไหล่) แต่ไม่พบ ICD9 8021 + 8363 ครบคู่',
+   'เพิ่ม ICD9 8021 (arthroscopy shoulder) และ 8363 ที่ขาด'),
+  ('B26','ERROR',NULL,'^7305$','^8026$','^8145$',NULL,NULL,
+   'มี ADP 7305 (ส่องกล้องเข่า/ACL) แต่ไม่พบ ICD9 8026 + 8145 ครบคู่',
+   'เพิ่ม ICD9 8026 (arthroscopy knee) และ 8145 ที่ขาด'),
+  ('B27','ERROR',NULL,'^7011$','^8151$',NULL,NULL,NULL,
+   'มี ADP 7011 (THA) แต่ไม่พบ ICD9 8151',
+   'เพิ่ม ICD9 8151 (total hip replacement)'),
+  ('B28','ERROR',NULL,'^7216$','^781[0-9]?$',NULL,NULL,NULL,
+   'มี ADP 7216 (external fixator) แต่ไม่พบ ICD9 781x',
+   'เพิ่ม ICD9 781x (application of external fixator)'),
+  ('B29','ERROR',NULL,'^7308$','^8026$','^(8145|8147)$',NULL,NULL,
+   'มี ADP 7308 (ส่องกล้องเข่า 2) แต่ไม่พบ ICD9 8026 + 8145/8147 ครบคู่',
+   'เพิ่ม ICD9 8026 และ 8145/8147 ที่ขาด'),
+  ('B30','ERROR',NULL,'^7214A$','^(791|793)[0-9]?$',NULL,NULL,NULL,
+   'มี ADP 7214A (screw A) แต่ไม่พบ ICD9 791x/793x',
+   'เพิ่ม ICD9 791x/793x ตาม operative note'),
+  ('B31','WARNING',NULL,'^8704$','^9324$',NULL,NULL,NULL,
+   'มี ADP 8704 แต่ไม่พบ ICD9 9324',
+   'เพิ่ม ICD9 9324'),
+  ('B32','ERROR',NULL,'^1003$','^0212$','^(?!0212$)0[12][0-9]{1,2}$',NULL,NULL,
+   'มี ADP 1003 (dural substitute) แต่ไม่พบ ICD9 0212 ร่วมกับ craniotomy 01xx/02xx',
+   'เพิ่ม ICD9 0212 และ/หรือรหัส craniotomy ที่ขาด'),
+  ('B33','ERROR',NULL,'^7209$','^(791|793)[0-9]?$',NULL,NULL,NULL,
+   'มี ADP 7209 (plate/nail distal femur) แต่ไม่พบ ICD9 791x/793x',
+   'เพิ่ม ICD9 791x/793x ตาม operative note'),
+  ('B34','ERROR',NULL,'^5501$','^(4863|485[0-9]?)$',NULL,NULL,NULL,
+   'มี ADP 5501 (circular stapler) แต่ไม่พบ ICD9 4863/485x',
+   'เพิ่ม ICD9 ตัดต่อลำไส้ตรง 4863/485x'),
+  ('B35','WARNING',NULL,'^8703$','^9324$',NULL,NULL,NULL,
+   'มี ADP 8703 แต่ไม่พบ ICD9 9324',
+   'เพิ่ม ICD9 9324'),
+  ('B36','ERROR',NULL,'^7315$','^(7[6-9]|8[0-4])[0-9]{1,2}$',NULL,NULL,NULL,
+   'มี ADP 7315 (อุปกรณ์ยึดตรึงอื่น) แต่ไม่พบ ICD9 ผ่าตัดกระดูก 76xx-84xx',
+   'เพิ่ม ICD9 ผ่าตัดกระดูกที่ทำจริง'),
+  ('B37','ERROR',NULL,'^7306$','^(8026|8145)$',NULL,NULL,NULL,
+   'มี ADP 7306 (ส่องกล้องข้ออื่น) แต่ไม่พบ ICD9 8026/8145',
+   'เพิ่ม ICD9 8026/8145 ตามที่ทำจริง'),
+  ('B38','ERROR',NULL,'^5303$','^5187$',NULL,NULL,NULL,
+   'มี ADP 5303 (biliary stent 2) แต่ไม่พบ ICD9 5187',
+   'เพิ่ม ICD9 5187'),
+
+  /* ---------------- C = ADP ที่ต้องมาเป็นคู่ ---------------- */
+  ('C01','ERROR',  NULL,'^7214B$',NULL,NULL,'^7301$', NULL,'มี ADP 7214B แต่ไม่พบ ADP 7301 (plate) คู่กัน','ตรวจใบเบิก/สติกเกอร์ implant แล้วคีย์ ADP 7301'),
+  ('C02','WARNING',NULL,'^7301$', NULL,NULL,'^7214B$',NULL,'มี ADP 7301 แต่ไม่พบ ADP 7214B (screw) คู่กัน','ตรวจใบเบิก/สติกเกอร์ implant แล้วคีย์ ADP 7214B'),
+  ('C03','ERROR',  NULL,'^7210$', NULL,NULL,'^7302$', NULL,'มี ADP 7210 แต่ไม่พบ ADP 7302 (screw) คู่กัน','ตรวจใบเบิก/สติกเกอร์ implant แล้วคีย์ ADP 7302'),
+  ('C04','ERROR',  NULL,'^7209$', NULL,NULL,'^7302$', NULL,'มี ADP 7209 แต่ไม่พบ ADP 7302 (screw) คู่กัน','ตรวจใบเบิก/สติกเกอร์ implant แล้วคีย์ ADP 7302'),
+  ('C05','ERROR',  NULL,'^7214A$',NULL,NULL,'^7301$', NULL,'มี ADP 7214A แต่ไม่พบ ADP 7301 (plate) คู่กัน','ตรวจใบเบิก/สติกเกอร์ implant แล้วคีย์ ADP 7301'),
+  ('C06','ERROR',  NULL,'^7005A$',NULL,NULL,'^7402$', NULL,'มี ADP 7005A แต่ไม่พบ ADP 7402 (bone cement)','คีย์ ADP 7402 ตามจำนวนซีเมนต์ที่ใช้'),
+  ('C07','ERROR',  NULL,'^7208B$',NULL,NULL,'^7208A$',NULL,'มี ADP 7208B (rod) แต่ไม่พบ ADP 7208A (pedicle screw)','ตรวจใบเบิก/สติกเกอร์ implant แล้วคีย์ ADP 7208A'),
+  ('C08','WARNING',NULL,'^7208A$',NULL,NULL,'^7208B$',NULL,'มี ADP 7208A (pedicle screw) แต่ไม่พบ ADP 7208B (rod)','ตรวจใบเบิก/สติกเกอร์ implant แล้วคีย์ ADP 7208B'),
+  ('C09','WARNING',NULL,'^5501$', NULL,NULL,'^5503$', NULL,'มี ADP 5501 แต่ไม่พบ ADP 5503','ตรวจใบเบิก stapler แล้วคีย์ ADP 5503 ถ้าใช้'),
+  ('C10','WARNING',NULL,'^7304$', NULL,NULL,'^7212$', NULL,'มี ADP 7304 (mini screw) แต่ไม่พบ ADP 7212 (mini plate)','ตรวจใบเบิก/สติกเกอร์ implant แล้วคีย์ ADP 7212 ถ้าใช้'),
+  ('C11','WARNING',NULL,'^7308$', NULL,NULL,'^7305$', NULL,'มี ADP 7308 แต่ไม่พบ ADP 7305','ตรวจใบเบิกอุปกรณ์ส่องกล้องแล้วคีย์ ADP 7305 ถ้าใช้'),
+
+  /* ---------------- D = ความสอดคล้องอื่น ๆ ---------------- */
+  ('D01-2006','INFO',NULL,'^2006$',NULL,NULL,NULL,'^H2[5-8]',
+   'มี ADP 2006 (IOL) แต่ PDx ไม่อยู่ในกลุ่ม H25-H28',
+   'ทบทวน PDx ให้สอดคล้องกับเหตุที่ใส่ IOL หรือตรวจว่าคีย์ ADP ถูกผู้ป่วย'),
+  ('D01-5608','INFO',NULL,'^5608$',NULL,NULL,NULL,'^K4[0-6]',
+   'มี ADP 5608 (mesh) แต่ PDx ไม่อยู่ในกลุ่ม K40-K46',
+   'ทบทวน PDx ให้เป็นรหัสไส้เลื่อน K40-K46 หรือตรวจว่าคีย์ ADP ถูกผู้ป่วย'),
+  ('D01-7206','INFO',NULL,'^7206$',NULL,NULL,NULL,'^S72',
+   'มี ADP 7206 (PFN) แต่ PDx ไม่อยู่ในกลุ่ม S72',
+   'ทบทวน PDx ให้เป็นกระดูกต้นขาหัก S72 หรือตรวจว่าคีย์ ADP ถูกผู้ป่วย'),
+  ('D02','WARNING','^786[0-9]?$','^7[23][0-9]{2}[A-Z]?$','^(791|793|785)[0-9]?$',NULL,NULL,NULL,
+   'มี ICD9 ถอดอุปกรณ์ (786x) และมี ADP 72xx/73xx แต่ไม่พบหัตถการใส่อุปกรณ์ใหม่',
+   'ถ้าใส่อุปกรณ์ใหม่ เพิ่ม ICD9 791x/793x/785x; ถ้าถอดอย่างเดียว ให้ลบ ADP อุปกรณ์ที่ไม่ได้ใส่')
+  ) AS t(rule_id, lvl, t_icd9, t_adp, r_icd9_a, r_icd9_b, r_adp, r_pdx, note, fix)
+),
+
+/* ---------- เทียบ regex ครั้งเดียวต่อรหัส สรุปเป็นจำนวนที่ตรงต่อ AN x กฎ ---------- */
+f_icd AS (
+  SELECT c.an, r.rule_id,
+    sum(CASE WHEN r.t_icd9   IS NOT NULL AND c.code ~ r.t_icd9   THEN 1 ELSE 0 END) AS t_i,
+    sum(CASE WHEN r.r_icd9_a IS NOT NULL AND c.code ~ r.r_icd9_a THEN 1 ELSE 0 END) AS r_ia,
+    sum(CASE WHEN r.r_icd9_b IS NOT NULL AND c.code ~ r.r_icd9_b THEN 1 ELSE 0 END) AS r_ib
+  FROM icd c
+  CROSS JOIN rules r
+  GROUP BY c.an, r.rule_id
+),
+f_adp AS (
+  SELECT c.an, r.rule_id,
+    sum(CASE WHEN r.t_adp IS NOT NULL AND c.code ~ r.t_adp THEN 1 ELSE 0 END) AS t_a,
+    sum(CASE WHEN r.r_adp IS NOT NULL AND c.code ~ r.r_adp THEN 1 ELSE 0 END) AS r_a
+  FROM adp c
+  CROSS JOIN rules r
+  GROUP BY c.an, r.rule_id
+),
+f_pdx AS (
+  SELECT c.an, r.rule_id,
+    sum(CASE WHEN r.r_pdx IS NOT NULL AND c.code ~ r.r_pdx THEN 1 ELSE 0 END) AS r_p
+  FROM pdx c
+  CROSS JOIN rules r
+  GROUP BY c.an, r.rule_id
+),
+
+/* ---------- AN ที่มีรหัสอย่างน้อย 1 อย่าง x ทุกกฎ ---------- */
+an_rule AS (
+  SELECT v.an, r.rule_id
+  FROM ipd v
+  CROSS JOIN rules r
+  WHERE EXISTS (SELECT 1 FROM icd x WHERE x.an = v.an)
+     OR EXISTS (SELECT 1 FROM adp x WHERE x.an = v.an)
+),
+
+/* ---------- เข้าเงื่อนไขถ้าพบ แต่ไม่ผ่านเงื่อนไขต้องพบ ---------- */
+fail AS (
+  SELECT ar.an, r.*
+  FROM an_rule ar
+  JOIN rules r       ON r.rule_id = ar.rule_id
+  LEFT JOIN f_icd fi ON fi.an = ar.an AND fi.rule_id = ar.rule_id
+  LEFT JOIN f_adp fa ON fa.an = ar.an AND fa.rule_id = ar.rule_id
+  LEFT JOIN f_pdx fp ON fp.an = ar.an AND fp.rule_id = ar.rule_id
+  WHERE (r.t_icd9 IS NULL OR coalesce(fi.t_i, 0) &gt; 0)
+    AND (r.t_adp  IS NULL OR coalesce(fa.t_a, 0) &gt; 0)
+    AND NOT (
+          (r.r_icd9_a IS NULL OR coalesce(fi.r_ia, 0) &gt; 0)
+      AND (r.r_icd9_b IS NULL OR coalesce(fi.r_ib, 0) &gt; 0)
+      AND (r.r_adp    IS NULL OR coalesce(fa.r_a,  0) &gt; 0)
+      AND (r.r_pdx    IS NULL OR coalesce(fp.r_p,  0) &gt; 0)
+    )
+),
+
+/* ---------- สรุปรหัสต่อ AN ---------- */
+icd_summ AS (
+  SELECT an, string_agg(code, ', ' ORDER BY code) AS icd9_list
+  FROM icd GROUP BY an
+),
+adp_summ AS (
+  SELECT an, string_agg(code || ' x' || qty, ', ' ORDER BY code) AS adp_list
+  FROM adp GROUP BY an
+)
+
+/* ---------- ผลลัพธ์ ---------- */
+SELECT
+  f.an                                              AS an,
+  v.hn                                              AS hn,
+  concat_ws(' ', concat(p.pname, p.fname), p.lname) AS ชื่อ_สกุล,
+  v.dchdate                                         AS วันจำหน่าย,
+  concat_ws(' ', v.pttype, pt.name)                 AS สิทธิ,
+  d.code                                            AS pdx,
+  si.icd9_list                                      AS icd9_ที่ลง,
+  sa.adp_list                                       AS adp_ที่ลง,
+  f.rule_id                                         AS rule_id,
+  f.lvl                                             AS ระดับ,
+  f.note                                            AS หมายเหตุ,
+  f.fix || CASE left(f.rule_id, 1)
+             WHEN 'A' THEN ' | ถ้าไม่ได้ใช้อุปกรณ์จริง ให้ทบทวน ICD9 ให้ตรงกับหัตถการที่ทำ'
+             WHEN 'B' THEN ' | ถ้าไม่ได้ใช้อุปกรณ์จริง ให้ลบ/แก้รายการ ADP ในค่าใช้จ่าย'
+             WHEN 'C' THEN ' | ถ้าไม่ได้ใช้คู่กันจริง ให้ตรวจว่าคีย์ ADP ถูกรหัส'
+             ELSE ''
+           END                                      AS วิธีแก้ไข
+FROM fail f
+JOIN ipd v           ON v.an = f.an
+LEFT JOIN pdx d      ON d.an = f.an
+LEFT JOIN icd_summ si ON si.an = f.an
+LEFT JOIN adp_summ sa ON sa.an = f.an
+LEFT JOIN patient p  ON p.hn = v.hn
+LEFT JOIN pttype pt  ON pt.pttype = v.pttype
+ORDER BY
+  CASE f.lvl WHEN 'ERROR' THEN 1 WHEN 'WARNING' THEN 2 ELSE 3 END,
+  v.dchdate, f.an, f.rule_id;</pre>
+</section>
+
+<section class="panel">
+<h2>คอลัมน์ผลลัพธ์</h2>
+<div class="cols">
+<div><code class="i">an</code> <code class="i">hn</code> <code class="i">ชื่อ_สกุล</code></div>
+<div><code class="i">วันจำหน่าย</code> <code class="i">สิทธิ</code> <code class="i">pdx</code></div>
+<div><code class="i">icd9_ที่ลง</code> ICD9 ทั้งหมดใน AN</div>
+<div><code class="i">adp_ที่ลง</code> ADP พร้อมจำนวน เช่น 7301 x1</div>
+<div><code class="i">rule_id</code> <code class="i">ระดับ</code> ERROR / WARNING / INFO</div>
+<div><code class="i">หมายเหตุ</code> <code class="i">วิธีแก้ไข</code></div>
+</div>
+<p class="sub" style="margin-top:10px">ICD9 อ่านจาก <code class="i">iptoprt</code> (รหัสที่ส่งออกเคลม) · ADP จาก <code class="i">opitemrece</code> + <code class="i">nondrugitems.nhso_adp_code</code> นับเฉพาะจำนวนสุทธิมากกว่า 0 · PDx จาก <code class="i">iptdiag</code> diagtype 1 · โค้ดไม่มีเครื่องหมาย double quote เพื่อให้ SQLQueryForm รับได้</p>
+</section>
+</div></main>
+
+<footer><div class="wrap">
+ออกแบบและพัฒนาโดย นายแพทย์กุลพล ตั้งรัตนาพิบูล<br>
+นายแพทย์ชำนาญการ (ด้านเวชกรรม)<br>
+ปฏิบัติหน้าที่ผู้อำนวยการ<a href="https://www.songkwaehospital.com/" target="_blank" rel="noopener">โรงพยาบาลสองแคว</a> อำเภอสองแคว จังหวัดน่าน
+</div></footer>
+
+<script>
+const b=document.getElementById('copy'),pre=document.getElementById('sql');
+b.onclick=async()=>{const t=pre.textContent;
+  try{await navigator.clipboard.writeText(t);b.textContent='คัดลอกแล้ว ✓';b.classList.add('done')}
+  catch(e){const r=document.createRange();r.selectNodeContents(pre);const s=getSelection();s.removeAllRanges();s.addRange(r);b.textContent='เลือกโค้ดแล้ว กด Ctrl+C'}
+  setTimeout(()=>{b.textContent='คัดลอกโค้ด';b.classList.remove('done')},2500)};
+</script>
